@@ -1,208 +1,244 @@
-
-const express = require('express');
-const bodyParser = require('body-parser');
-const session = require('express-session');
-const SQLiteStore = require('connect-sqlite3')(session);
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-const bcrypt = require('bcryptjs');
-const cors = require('cors');
+const express = require("express");
+const bodyParser = require("body-parser");
+const session = require("express-session");
+const pgSession = require("connect-pg-simple")(session);
+const { Pool } = require("pg");
+const path = require("path");
+const bcrypt = require("bcryptjs");
+const cors = require("cors");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 
+// 🔹 Conexão PostgreSQL (Render fornece a URL no env DATABASE_URL)
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false } // Render exige SSL
+});
 
 // Middlewares
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-app.use(session({
-  store: new SQLiteStore({ db: 'sessions.db', dir: './data' }),
-  secret: 'sistema-membros-secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { maxAge: 1000 * 60 * 60 * 2 } // 2h
-}));
+app.use(
+  session({
+    store: new pgSession({
+      pool: pool,
+      tableName: "session"
+    }),
+    secret: "sistema-membros-secret",
+    resave: false,
+    saveUninitialized: false,
+    cookie: { maxAge: 1000 * 60 * 60 * 2 } // 2h
+  })
+);
 
 // Static files
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, "public")));
 
-// DB setup
-const dbFile = path.join(__dirname, 'data', 'membros.db');
-const fs = require('fs');
-fs.mkdirSync(path.join(__dirname, 'data'), { recursive: true });
-const db = new sqlite3.Database(dbFile);
+// 🔹 Inicializar tabelas
+async function initDB() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usuarios (
+      id SERIAL PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      senha_hash TEXT NOT NULL,
+      perfil TEXT NOT NULL DEFAULT 'admin',
+      ativo BOOLEAN NOT NULL DEFAULT TRUE
+    );
+  `);
 
-// Initialize tables
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS usuarios (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    senha_hash TEXT NOT NULL,
-    perfil TEXT NOT NULL DEFAULT 'admin', -- admin, tesoureiro, membro
-    ativo INTEGER NOT NULL DEFAULT 1
-  )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS membros (
+      id SERIAL PRIMARY KEY,
+      nome TEXT NOT NULL,
+      telefone TEXT,
+      endereco TEXT,
+      funcao TEXT,
+      data_entrada DATE,
+      observacoes TEXT,
+      ativo BOOLEAN NOT NULL DEFAULT TRUE
+    );
+  `);
 
-  db.run(`CREATE TABLE IF NOT EXISTS membros (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    nome TEXT NOT NULL,
-    telefone TEXT,
-    endereco TEXT,
-    funcao TEXT,
-    data_entrada TEXT,
-    observacoes TEXT,
-    ativo INTEGER NOT NULL DEFAULT 1
-  )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS contribuicoes (
+      id SERIAL PRIMARY KEY,
+      membro_id INTEGER REFERENCES membros(id),
+      tipo TEXT NOT NULL,
+      valor NUMERIC NOT NULL,
+      data DATE NOT NULL,
+      observacoes TEXT
+    );
+  `);
 
-  db.run(`CREATE TABLE IF NOT EXISTS contribuicoes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    membro_id INTEGER NOT NULL,
-    tipo TEXT NOT NULL, -- dizimo | oferta | outro
-    valor REAL NOT NULL,
-    data TEXT NOT NULL,
-    observacoes TEXT,
-    FOREIGN KEY(membro_id) REFERENCES membros(id)
-  )`);
-
-  // Ensure admin user exists (password: 123)
-  const adminPass = bcrypt.hashSync('123', 10);
-  db.get(`SELECT id FROM usuarios WHERE username = ?`, ['admin'], (err, row) => {
-    if (err) { console.error('Erro ao consultar admin:', err); return; }
-    if (!row) {
-      db.run(`INSERT INTO usuarios (username, senha_hash, perfil) VALUES (?, ?, 'admin')`,
-        ['admin', adminPass],
-        (err2) => {
-          if (err2) console.error('Erro ao criar admin:', err2);
-        });
-    }
-  });
-});
-
-// Auth middleware
-function requireAuth(req, res, next) {
-  if (req.session && req.session.user) return next();
-  return res.status(401).json({ error: 'Não autenticado' });
+  // 🔹 Criar admin se não existir
+  const res = await pool.query("SELECT id FROM usuarios WHERE username = $1", [
+    "admin"
+  ]);
+  if (res.rows.length === 0) {
+    const hash = bcrypt.hashSync("123", 10);
+    await pool.query(
+      "INSERT INTO usuarios (username, senha_hash, perfil) VALUES ($1, $2, 'admin')",
+      ["admin", hash]
+    );
+    console.log("✅ Usuário admin criado (senha: 123)");
+  }
 }
 
-// Routes - Auth
-app.post('/api/login', (req, res) => {
+// Middleware de autenticação
+function requireAuth(req, res, next) {
+  if (req.session && req.session.user) return next();
+  return res.status(401).json({ error: "Não autenticado" });
+}
+
+// 🔹 Rotas de autenticação
+app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
-  db.get(`SELECT * FROM usuarios WHERE username = ? AND ativo = 1`, [username], (err, user) => {
-    if (err) return res.status(500).json({ error: 'Erro no banco' });
-    if (!user) return res.status(401).json({ error: 'Usuário ou senha inválidos' });
+  try {
+    const result = await pool.query(
+      "SELECT * FROM usuarios WHERE username = $1 AND ativo = TRUE",
+      [username]
+    );
+    const user = result.rows[0];
+    if (!user) return res.status(401).json({ error: "Usuário ou senha inválidos" });
+
     const ok = bcrypt.compareSync(password, user.senha_hash);
-    if (!ok) return res.status(401).json({ error: 'Usuário ou senha inválidos' });
+    if (!ok) return res.status(401).json({ error: "Usuário ou senha inválidos" });
+
     req.session.user = { id: user.id, username: user.username, perfil: user.perfil };
-    res.json({ message: 'Logado', user: req.session.user });
-  });
+    res.json({ message: "Logado", user: req.session.user });
+  } catch (err) {
+    res.status(500).json({ error: "Erro no login" });
+  }
 });
 
-app.post('/api/logout', (req, res) => {
-  req.session.destroy(() => res.json({ message: 'Logout efetuado' }));
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(() => res.json({ message: "Logout efetuado" }));
 });
 
-app.get('/api/me', (req, res) => {
+app.get("/api/me", (req, res) => {
   res.json({ user: req.session?.user || null });
 });
 
-// Routes - Membros
-app.get('/api/membros', requireAuth, (req, res) => {
-  db.all(`SELECT * FROM membros ORDER BY nome`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: 'Erro ao listar' });
-    res.json(rows);
-  });
+// 🔹 Rotas de Membros
+app.get("/api/membros", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM membros ORDER BY nome");
+    res.json(result.rows);
+  } catch {
+    res.status(500).json({ error: "Erro ao listar" });
+  }
 });
 
-app.post('/api/membros', requireAuth, (req, res) => {
-  const { nome, telefone, endereco, funcao, data_entrada, observacoes, ativo = 1 } = req.body;
-  if (!nome) return res.status(400).json({ error: 'Nome é obrigatório' });
-  db.run(`INSERT INTO membros (nome, telefone, endereco, funcao, data_entrada, observacoes, ativo)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [nome, telefone, endereco, funcao, data_entrada, observacoes, ativo],
-          function(err) {
-            if (err) return res.status(500).json({ error: 'Erro ao inserir' });
-            res.json({ id: this.lastID });
-          });
+app.post("/api/membros", requireAuth, async (req, res) => {
+  const { nome, telefone, endereco, funcao, data_entrada, observacoes, ativo = true } = req.body;
+  if (!nome) return res.status(400).json({ error: "Nome é obrigatório" });
+  try {
+    const result = await pool.query(
+      `INSERT INTO membros (nome, telefone, endereco, funcao, data_entrada, observacoes, ativo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+      [nome, telefone, endereco, funcao, data_entrada, observacoes, ativo]
+    );
+    res.json({ id: result.rows[0].id });
+  } catch {
+    res.status(500).json({ error: "Erro ao inserir" });
+  }
 });
 
-app.put('/api/membros/:id', requireAuth, (req, res) => {
-  const { nome, telefone, endereco, funcao, data_entrada, observacoes, ativo = 1 } = req.body;
-  db.run(`UPDATE membros SET nome=?, telefone=?, endereco=?, funcao=?, data_entrada=?, observacoes=?, ativo=? WHERE id=?`,
-    [nome, telefone, endereco, funcao, data_entrada, observacoes, ativo, req.params.id],
-    function(err){
-      if (err) return res.status(500).json({ error: 'Erro ao atualizar' });
-      res.json({ changes: this.changes });
-    });
+app.put("/api/membros/:id", requireAuth, async (req, res) => {
+  const { nome, telefone, endereco, funcao, data_entrada, observacoes, ativo = true } = req.body;
+  try {
+    await pool.query(
+      `UPDATE membros SET nome=$1, telefone=$2, endereco=$3, funcao=$4, data_entrada=$5, observacoes=$6, ativo=$7 WHERE id=$8`,
+      [nome, telefone, endereco, funcao, data_entrada, observacoes, ativo, req.params.id]
+    );
+    res.json({ message: "Atualizado" });
+  } catch {
+    res.status(500).json({ error: "Erro ao atualizar" });
+  }
 });
 
-app.delete('/api/membros/:id', requireAuth, (req, res) => {
-  db.run(`DELETE FROM membros WHERE id=?`, [req.params.id], function(err){
-    if (err) return res.status(500).json({ error: 'Erro ao excluir' });
-    res.json({ changes: this.changes });
-  });
+app.delete("/api/membros/:id", requireAuth, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM membros WHERE id=$1", [req.params.id]);
+    res.json({ message: "Excluído" });
+  } catch {
+    res.status(500).json({ error: "Erro ao excluir" });
+  }
 });
 
-// Routes - Contribuições
-app.get('/api/contribuicoes', requireAuth, (req, res) => {
-  db.all(`SELECT c.*, m.nome as membro_nome 
-          FROM contribuicoes c 
-          JOIN membros m ON m.id = c.membro_id
-          ORDER BY date(c.data) DESC`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: 'Erro ao listar' });
-    res.json(rows);
-  });
+// 🔹 Rotas de Contribuições
+app.get("/api/contribuicoes", requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT c.*, m.nome as membro_nome
+       FROM contribuicoes c
+       JOIN membros m ON m.id = c.membro_id
+       ORDER BY date(c.data) DESC`
+    );
+    res.json(result.rows);
+  } catch {
+    res.status(500).json({ error: "Erro ao listar" });
+  }
 });
 
-app.post('/api/contribuicoes', requireAuth, (req, res) => {
+app.post("/api/contribuicoes", requireAuth, async (req, res) => {
   const { membro_id, tipo, valor, data, observacoes } = req.body;
-  if (!membro_id || !tipo || !valor || !data) return res.status(400).json({ error: 'Campos obrigatórios: membro_id, tipo, valor, data' });
-  db.run(`INSERT INTO contribuicoes (membro_id, tipo, valor, data, observacoes)
-          VALUES (?, ?, ?, ?, ?)`,
-          [membro_id, tipo, valor, data, observacoes],
-          function(err){
-            if (err) return res.status(500).json({ error: 'Erro ao inserir' });
-            res.json({ id: this.lastID });
-          });
+  if (!membro_id || !tipo || !valor || !data)
+    return res.status(400).json({ error: "Campos obrigatórios: membro_id, tipo, valor, data" });
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO contribuicoes (membro_id, tipo, valor, data, observacoes)
+       VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [membro_id, tipo, valor, data, observacoes]
+    );
+    res.json({ id: result.rows[0].id });
+  } catch {
+    res.status(500).json({ error: "Erro ao inserir" });
+  }
 });
 
-app.delete('/api/contribuicoes/:id', requireAuth, (req, res) => {
-  db.run(`DELETE FROM contribuicoes WHERE id=?`, [req.params.id], function(err){
-    if (err) return res.status(500).json({ error: 'Erro ao excluir' });
-    res.json({ changes: this.changes });
-  });
+app.delete("/api/contribuicoes/:id", requireAuth, async (req, res) => {
+  try {
+    await pool.query("DELETE FROM contribuicoes WHERE id=$1", [req.params.id]);
+    res.json({ message: "Excluído" });
+  } catch {
+    res.status(500).json({ error: "Erro ao excluir" });
+  }
 });
 
-// Routes - Dashboard/Resumo
-app.get('/api/resumo', requireAuth, (req, res) => {
-  const resumo = {};
-  db.get(`SELECT COUNT(*) as total FROM membros WHERE ativo=1`, [], (err, row1) => {
-    if (err) return res.status(500).json({ error: 'Erro no resumo 1' });
-    resumo.totalMembros = row1.total;
+// 🔹 Resumo
+app.get("/api/resumo", requireAuth, async (req, res) => {
+  try {
+    const totalMembros = await pool.query("SELECT COUNT(*) as total FROM membros WHERE ativo=TRUE");
+    const totalMes = await pool.query(
+      `SELECT COALESCE(SUM(valor),0) as totalMes
+       FROM contribuicoes WHERE date_trunc('month', data) = date_trunc('month', CURRENT_DATE)`
+    );
+    const ultimas = await pool.query(
+      `SELECT c.*, m.nome as membro_nome
+       FROM contribuicoes c JOIN membros m ON m.id=c.membro_id
+       ORDER BY date(c.data) DESC LIMIT 5`
+    );
 
-    // Entradas no mês atual
-    db.get(`SELECT IFNULL(SUM(valor), 0) as totalMes FROM contribuicoes 
-            WHERE strftime('%Y-%m', data) = strftime('%Y-%m', 'now')`, [], (err2, row2) => {
-      if (err2) return res.status(500).json({ error: 'Erro no resumo 2' });
-      resumo.totalMes = row2.totalMes;
-
-      // Últimas 5 contribuições
-      db.all(`SELECT c.*, m.nome as membro_nome 
-              FROM contribuicoes c JOIN membros m ON m.id=c.membro_id
-              ORDER BY date(c.data) DESC LIMIT 5`, [], (err3, rows3) => {
-        if (err3) return res.status(500).json({ error: 'Erro no resumo 3' });
-        resumo.ultimas = rows3;
-        res.json(resumo);
-      });
+    res.json({
+      totalMembros: totalMembros.rows[0].total,
+      totalMes: totalMes.rows[0].totalmes,
+      ultimas: ultimas.rows
     });
-  });
+  } catch {
+    res.status(500).json({ error: "Erro no resumo" });
+  }
 });
 
-// Fallback to login
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+// Fallback
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ Servidor rodando em http://localhost:${PORT}`);
+initDB().then(() => {
+  app.listen(PORT, () => console.log(`✅ Servidor rodando na porta ${PORT}`));
 });
