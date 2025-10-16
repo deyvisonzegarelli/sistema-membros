@@ -35,16 +35,6 @@ Usuário: admin
 
 Senha: 123
 
-O banco de dados inicia zerado, sem registros de membros ou contribuições.
-
-🧩 Estrutura do Projeto
-sistema-membros/
-├── server.js              # API + servidor estático
-├── data/
-│   ├── membros.db         # Banco SQLite (gerado automaticamente)
-│   └── sessions.db        # Sessões locais
-├── public/                # Páginas HTML (login, dashboard, etc.)
-└── package.json
 
 🔗 Rotas Principais (API)
 Método	Rota	Descrição
