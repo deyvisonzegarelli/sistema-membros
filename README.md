@@ -1,46 +1,86 @@
-# Sistema de Membros (Node.js + Express + SQLite)
+🧾 Sistema de Membros
 
-## Requisitos
-- Node.js 18+
-- Internet para carregar CSS/JS via CDN (Bootstrap)
+Aplicação simples para controle de membros e contribuições, desenvolvida com Node.js + Express + SQLite.
 
-## Como rodar
-1. Extraia o `.zip`.
-2. No terminal, acesse a pasta:
-   ```bash
-   cd sistema-membros
-   npm install
-   npm start
-   ```
-3. Abra no navegador: http://localhost:4000
+📌 Funcionalidades
 
-## Login
-- Usuário: **admin**
-- Senha: **123**
+Login de administrador com autenticação simples.
 
-> O banco começa **zerado** (sem membros e sem contribuições).
+Cadastro, listagem, edição e exclusão de membros.
 
-## Estrutura
-- `server.js` — API + servidor estático
-- `data/membros.db` — SQLite (criado automaticamente na primeira execução)
-- `public/` — páginas HTML (login, dashboard, membros, contribuições)
+Registro e controle de contribuições por membro.
 
-## Rotas principais (API)
-- `POST /api/login` `{ username, password }`
-- `POST /api/logout`
-- `GET /api/me`
-- `GET /api/membros` — lista
-- `POST /api/membros` — cria
-- `PUT /api/membros/:id` — atualiza
-- `DELETE /api/membros/:id` — remove
-- `GET /api/contribuicoes` — lista (com nome do membro)
-- `POST /api/contribuicoes` — cria
-- `DELETE /api/contribuicoes/:id` — remove
-- `GET /api/resumo` — dados do dashboard
+Resumo geral no dashboard (com totais e estatísticas).
 
-## Observações
-- Sessões são salvas em arquivo (`data/sessions.db`). Para ambiente de produção, considere um store dedicado.
-- Para trocar a porta, edite `PORT` no `server.js`.
-- Para trocar a senha do admin:
-  - Apague o arquivo `data/membros.db` e rode `npm start` novamente **OU**
-  - Atualize direto no banco com uma ferramenta SQLite e um hash bcrypt da nova senha.
+Interface leve e responsiva, utilizando Bootstrap via CDN.
+
+🚀 Como usar
+
+Certifique-se de ter o Node.js 18+ instalado.
+
+Extraia o projeto .zip ou clone o repositório.
+
+No terminal, execute os comandos:
+
+cd sistema-membros
+npm install
+npm start
+
+
+Abra o navegador e acesse: http://localhost:4000
+
+🔐 Login Padrão
+
+Usuário: admin
+
+Senha: 123
+
+O banco de dados inicia zerado, sem registros de membros ou contribuições.
+
+🧩 Estrutura do Projeto
+sistema-membros/
+├── server.js              # API + servidor estático
+├── data/
+│   ├── membros.db         # Banco SQLite (gerado automaticamente)
+│   └── sessions.db        # Sessões locais
+├── public/                # Páginas HTML (login, dashboard, etc.)
+└── package.json
+
+🔗 Rotas Principais (API)
+Método	Rota	Descrição
+POST	/api/login	Autentica o usuário
+POST	/api/logout	Finaliza a sessão
+GET	/api/me	Retorna dados do usuário logado
+GET	/api/membros	Lista todos os membros
+POST	/api/membros	Cadastra novo membro
+PUT	/api/membros/:id	Atualiza dados do membro
+DELETE	/api/membros/:id	Remove membro
+GET	/api/contribuicoes	Lista contribuições (com nome do membro)
+POST	/api/contribuicoes	Registra contribuição
+DELETE	/api/contribuicoes/:id	Exclui contribuição
+GET	/api/resumo	Dados do dashboard
+⚙️ Observações
+
+Sessões são armazenadas localmente em data/sessions.db.
+
+Para produção, recomenda-se um store dedicado.
+
+Para alterar a porta, edite a variável PORT no arquivo server.js.
+
+Para redefinir a senha do admin:
+
+Exclua o arquivo data/membros.db e reinicie com npm start, ou
+
+Atualize diretamente no banco SQLite com um novo hash bcrypt.
+
+💡 Objetivo do Projeto
+
+Este sistema foi desenvolvido para praticar conceitos fundamentais de backend com Node.js, incluindo:
+
+Criação de APIs RESTful com Express 🧠
+
+Persistência de dados com SQLite 💾
+
+Gerenciamento de sessões e autenticação 🔐
+
+Organização modular de rotas e estrutura de projeto
